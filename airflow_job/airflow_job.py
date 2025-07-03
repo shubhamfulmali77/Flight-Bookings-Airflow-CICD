@@ -69,7 +69,8 @@ with DAG(
                 "spark.executor.cores": "4",
                 "spark.executor.memory": "4g",
                 "spark.driver.cores": "4",
-                "spark.driver.memory": "4g"
+                "spark.driver.memory": "4g",
+                "spark.dataproc.batch.worker.count": "1"
             }
         },
         "environment_config": {
