@@ -65,10 +65,12 @@ with DAG(
         },
         "runtime_config": {
             "version": "2.2",  # Specify Dataproc version (if needed)
-            "properties": {
-                "spark.executor.instances": "1",
-                "spark.executor.cores": "4",
-                "spark.driver.cores": "4",
+            "spark_config": {
+                "spark.executor.instances": "2",
+                "spark.executor.cores": "2",
+                "spark.executor.memory": "4g",
+                "spark.driver.cores": "2",
+                "spark.driver.memory": "4g"
             }
         },
         "environment_config": {
