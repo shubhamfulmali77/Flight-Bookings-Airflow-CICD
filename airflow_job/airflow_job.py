@@ -1,11 +1,16 @@
 from datetime import datetime, timedelta
-import uuid  # Import UUID for unique batch IDs
-from airflow import DAG
-from airflow.providers.google.cloud.operators.dataproc import DataprocCreateBatchOperator
-from airflow.providers.google.cloud.sensors.gcs import GCSObjectExistenceSensor
-from airflow.models import Variable
+import uuid
 
-# DAG default arguments
+from airflow import DAG
+from airflow.models import Variable
+from airflow.providers.google.cloud.operators.dataproc import (
+    DataprocCreateClusterOperator,
+    DataprocSubmitJobOperator,
+    DataprocDeleteClusterOperator,
+)
+from airflow.providers.google.cloud.sensors.gcs import GCSObjectExistenceSensor
+
+# Default DAG arguments
 default_args = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -14,82 +19,90 @@ default_args = {
     'start_date': datetime(2025, 6, 2),
 }
 
-# Define the DAG
 with DAG(
-    dag_id="flight_booking_dataproc_bq_dag",
+    dag_id="flight_booking_cluster_dataproc_dag",
     default_args=default_args,
-    schedule_interval=None,  # Trigger manually or on-demand
+    schedule_interval=None,  # Run manually or via trigger
     catchup=False,
 ) as dag:
 
-    # Fetch environment variables
+    # Load environment-specific variables
     env = Variable.get("env", default_var="dev")
     gcs_bucket = Variable.get("gcs_bucket", default_var="airflow-project-gdsf")
     bq_project = Variable.get("bq_project", default_var="aerial-gadget-458900-f7")
     bq_dataset = Variable.get("bq_dataset", default_var=f"flight_data_{env}")
     tables = Variable.get("tables", deserialize_json=True)
 
-    # Extract table names from the 'tables' variable
     transformed_table = tables["transformed_table"]
     route_insights_table = tables["route_insights_table"]
     origin_insights_table = tables["origin_insights_table"]
 
-    # Generate a unique batch ID using UUID
-    batch_id = f"flight-booking-batch-{env}-{str(uuid.uuid4())[:8]}"  # Shortened UUID for brevity
+    CLUSTER_NAME = f"flight-booking-cluster-{uuid.uuid4().hex[:8]}"
+    REGION = "us-central1"
+    PROJECT_ID = "aerial-gadget-458900-f7"
 
-    # # Task 1: File Sensor for GCS
+    # Task 1: Wait for input file in GCS
     file_sensor = GCSObjectExistenceSensor(
         task_id="check_file_arrival",
         bucket=gcs_bucket,
-        object=f"airflow-project1/source-{env}/flight_booking.csv",  # Full file path in GCS
-        google_cloud_conn_id="google_cloud_default",  # GCP connection
-        timeout=300,  # Timeout in seconds
-        poke_interval=30,  # Time between checks
-        mode="poke",  # Blocking mode
+        object=f"airflow-project1/source-{env}/flight_booking.csv",
+        google_cloud_conn_id="google_cloud_default",
+        timeout=300,
+        poke_interval=30,
+        mode="poke",
     )
 
-    # Task 2: Submit PySpark job to Dataproc Serverless
-    batch_details = {
-        "pyspark_batch": {
-            "main_python_file_uri": f"gs://{gcs_bucket}/airflow-project1/spark-job/spark_transformation_job.py",  # Main Python file
-            "python_file_uris": [],  # Python WHL files
-            "jar_file_uris": [],  # JAR files
-            "args": [
-                f"--env={env}",
-                f"--bq_project={bq_project}",
-                f"--bq_dataset={bq_dataset}",
-                f"--transformed_table={transformed_table}",
-                f"--route_insights_table={route_insights_table}",
-                f"--origin_insights_table={origin_insights_table}",
-            ]
+    # Task 2: Create Dataproc Cluster with Autoscaling
+    create_cluster = DataprocCreateClusterOperator(
+        task_id="create_cluster",
+        project_id=PROJECT_ID,
+        cluster_name=CLUSTER_NAME,
+        region=REGION,
+        cluster_config={
+            "master_config": {
+                "num_instances": 1,
+                "machine_type_uri": "n1-standard-4",
+            },
+            "worker_config": {
+                "num_instances": 2,
+                "machine_type_uri": "n1-standard-4",
+            },
+            "autoscaling_config": {
+                "policy_uri": f"projects/{PROJECT_ID}/regions/{REGION}/autoscalingPolicies/flight-autoscale-policy"
+            },
         },
-        "runtime_config": {
-            "version": "2.2",  # Specify Dataproc version (if needed)
-            "properties": {
-                "spark.executor.instances": "2",
-                "spark.executor.cores": "2",
-                "spark.executor.memory": "4g",
-                "spark.driver.cores": "2",
-                "spark.driver.memory": "4g"
-            }
-        },
-        "environment_config": {
-            "execution_config": {
-                "service_account": "708003645534-compute@developer.gserviceaccount.com",
-                "network_uri": "projects/aerial-gadget-458900-f7/global/networks/default",
-                "subnetwork_uri": "projects/aerial-gadget-458900-f7/regions/us-central1/subnetworks/default",
-            }
-        },
-    }
-
-    pyspark_task = DataprocCreateBatchOperator(
-        task_id="run_spark_job_on_dataproc_serverless",
-        batch=batch_details,
-        batch_id=batch_id,
-        project_id="aerial-gadget-458900-f7",
-        region="us-central1",
-        gcp_conn_id="google_cloud_default",
     )
 
-    # Task Dependencies
-    file_sensor >> pyspark_task
+    # Task 3: Submit the Spark job to the cluster
+    submit_job = DataprocSubmitJobOperator(
+        task_id="submit_spark_job",
+        project_id=PROJECT_ID,
+        region=REGION,
+        job={
+            "reference": {"project_id": PROJECT_ID},
+            "placement": {"cluster_name": CLUSTER_NAME},
+            "pyspark_job": {
+                "main_python_file_uri": f"gs://{gcs_bucket}/airflow-project1/spark-job/spark_transformation_job.py",
+                "args": [
+                    f"--env={env}",
+                    f"--bq_project={bq_project}",
+                    f"--bq_dataset={bq_dataset}",
+                    f"--transformed_table={transformed_table}",
+                    f"--route_insights_table={route_insights_table}",
+                    f"--origin_insights_table={origin_insights_table}",
+                ],
+            },
+        },
+    )
+
+    # Task 4: Delete the Dataproc Cluster after job
+    delete_cluster = DataprocDeleteClusterOperator(
+        task_id="delete_cluster",
+        project_id=PROJECT_ID,
+        cluster_name=CLUSTER_NAME,
+        region=REGION,
+        trigger_rule="all_done",  # Always attempt to delete
+    )
+
+    # DAG Dependencies
+    file_sensor >> create_cluster >> submit_job >> delete_cluster
