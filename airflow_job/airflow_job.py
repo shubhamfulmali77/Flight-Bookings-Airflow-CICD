@@ -67,9 +67,7 @@ with DAG(
                 "num_instances": 2,
                 "machine_type_uri": "n1-standard-4",
             },
-            "autoscaling_config": {
-                "policy_uri": f"projects/{PROJECT_ID}/regions/{REGION}/autoscalingPolicies/flight-autoscale-policy"
-            },
+            
         },
     )
 
