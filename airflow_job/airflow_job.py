@@ -37,7 +37,7 @@ with DAG(
     route_insights_table = tables["route_insights_table"]
     origin_insights_table = tables["origin_insights_table"]
 
-    CLUSTER_NAME = f"flight-booking-cluster-{uuid.uuid4().hex[:8]}"
+    CLUSTER_NAME = "flight-booking-cluster"
     REGION = "us-central1"
     PROJECT_ID = "aerial-gadget-458900-f7"
 
